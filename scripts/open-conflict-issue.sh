@@ -75,6 +75,24 @@ print("\n".join(parts))
 PYEOF
 )
 
+# Si les issues sont désactivées sur le fork, on bascule sur FALLBACK_REPO
+# (typiquement le repo forks-autopilot lui-même).
+HAS_ISSUES=$(gh api "repos/$REPO" --jq '.has_issues' 2>/dev/null || echo "false")
+if [[ "$HAS_ISSUES" != "true" ]]; then
+  FALLBACK="${FALLBACK_REPO:-}"
+  if [[ -z "$FALLBACK" ]]; then
+    echo "issues disabled on $REPO and no FALLBACK_REPO set" >&2
+    exit 2
+  fi
+  echo "issues disabled on $REPO — falling back to $FALLBACK"
+  # Préfixer le titre pour disambiguïser dans le repo central
+  TITLE="[$FORK_NAME] $TITLE"
+  BODY="_(issues disabled on \`$REPO\` — cette issue vit sur \`$FALLBACK\`)_
+
+$BODY"
+  REPO="$FALLBACK"
+fi
+
 # Assurer que le label 'autopilot' existe
 gh label create autopilot --repo "$REPO" --color ededed --description "Created by forks-autopilot" >/dev/null 2>&1 || true
 

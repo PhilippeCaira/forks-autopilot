@@ -110,6 +110,7 @@ jobs:
         if: steps.rebase.outputs.conflict == 'true'
         env:
           GH_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}
+          FALLBACK_REPO: ${{ github.repository }}
         run: |
           chmod +x scripts/open-conflict-issue.sh
           ./scripts/open-conflict-issue.sh "${{ matrix.name }}" diagnostic.json
