@@ -26,7 +26,9 @@ TITLE="[autopilot] rebase $PATCHES_BRANCH onto $UPSTREAM@$TARGET_REF failed"
 
 BODY=$(python3 <<'PYEOF'
 import json, os, sys
-d = json.load(open(os.environ["DIAG_FILE"]))
+raw = json.load(open(os.environ["DIAG_FILE"]))
+# Normaliser: toute valeur null devient "" pour éviter les TypeError
+d = {k: ("" if v is None else v) for k, v in raw.items()}
 files = d.get("conflicted_files") or []
 commits = d.get("upstream_window") or []
 

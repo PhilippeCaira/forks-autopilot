@@ -10,6 +10,10 @@
 # Git identity: GIT_AUTHOR_NAME/EMAIL si fournis, sinon "forks-autopilot" / <noreply>.
 
 set -euo pipefail
+[[ "${DEBUG:-}" == "1" ]] && set -x
+
+# Tous les logs d'exécution sur stderr; seul le JSON final sort sur stdout.
+log() { echo "[rebase-and-push] $*" >&2; }
 
 FORK_NAME="${1:?usage: rebase-and-push.sh <fork-name> <mode> <target_ref>}"
 MODE="${2:?}"
@@ -38,30 +42,33 @@ REPO_DIR="$WORKDIR/$FORK_NAME"
 rm -rf "$REPO_DIR"
 mkdir -p "$WORKDIR"
 
-# clone shallow est risqué pour un rebase profond; on prend complet
+log "cloning $OWNER/$FORK_NAME"
 git clone --quiet "https://x-access-token:$TOKEN@github.com/$OWNER/$FORK_NAME.git" "$REPO_DIR"
 cd "$REPO_DIR"
 
+log "adding upstream $UPSTREAM and fetching $UPSTREAM_BRANCH"
 git remote add upstream "https://github.com/$UPSTREAM.git"
-git fetch --quiet --tags upstream "$UPSTREAM_BRANCH"
+git fetch --tags upstream "$UPSTREAM_BRANCH" >&2
 
 # Résoudre target_ref en un objet commit:
 #  - en mode release: TARGET_REF est un tag
 #  - en mode push: TARGET_REF est un sha
 if [[ "$MODE" == "release" ]]; then
-  git fetch --quiet upstream "refs/tags/$TARGET_REF:refs/tags/$TARGET_REF"
+  log "fetching tag $TARGET_REF from upstream"
+  git fetch upstream "refs/tags/$TARGET_REF:refs/tags/$TARGET_REF" >&2
 fi
 
 if ! git rev-parse --verify "$TARGET_REF^{commit}" >/dev/null 2>&1; then
-  echo "cannot resolve target_ref '$TARGET_REF'" >&2
+  log "ERROR: cannot resolve target_ref '$TARGET_REF'"
   exit 3
 fi
 
 # Checkout branche patches (créer la ref locale depuis origin)
 if git ls-remote --exit-code --heads origin "$PATCHES_BRANCH" >/dev/null 2>&1; then
   git checkout -q -B "$PATCHES_BRANCH" "origin/$PATCHES_BRANCH"
+  log "checked out $PATCHES_BRANCH ($(git rev-parse --short HEAD))"
 else
-  echo "patches branch '$PATCHES_BRANCH' does not exist on fork $OWNER/$FORK_NAME" >&2
+  log "ERROR: patches branch '$PATCHES_BRANCH' does not exist on fork $OWNER/$FORK_NAME"
   exit 4
 fi
 
@@ -82,65 +89,56 @@ print(json.dumps(items))
 ' 2>/dev/null || echo "[]")
 
 # Tentative de rebase
+log "rebasing $PATCHES_BRANCH onto $TARGET_REF"
 set +e
 git rebase "$TARGET_REF" >/tmp/rebase.log 2>&1
 rebase_rc=$?
 set -e
 
 if [[ $rebase_rc -eq 0 ]]; then
-  # Pose marqueur selon le mode
   if [[ "$MODE" == "release" ]]; then
     MARKER="oidc-base/$TARGET_REF"
   else
     SHORT="${TARGET_REF:0:12}"
     MARKER="oidc-base-push/$UPSTREAM_BRANCH/$SHORT"
   fi
+  log "rebase OK — tagging $MARKER and pushing"
   git tag -f "$MARKER" "$PATCHES_BRANCH"
-  git push --force-with-lease --quiet origin "$PATCHES_BRANCH"
-  git push --quiet --force origin "refs/tags/$MARKER"
-  echo "status=success"
-  echo "marker=$MARKER"
-  echo "target_ref=$TARGET_REF"
+  git push --force-with-lease origin "$PATCHES_BRANCH" >&2
+  git push --force origin "refs/tags/$MARKER" >&2
+  # JSON succès sur stdout
+  jq -n \
+    --arg status success \
+    --arg fork "$FORK_NAME" \
+    --arg marker "$MARKER" \
+    --arg target_ref "$TARGET_REF" \
+    '{status:$status, fork:$fork, marker:$marker, target_ref:$target_ref}'
   exit 0
 fi
 
 # Échec: capture fichiers en conflit et abort
+log "rebase FAILED (rc=$rebase_rc) — capturing diagnostic"
+sed -n '1,60p' /tmp/rebase.log >&2
 CONFLICTED=$(git diff --name-only --diff-filter=U 2>/dev/null | paste -sd',' - || echo "")
 git rebase --abort 2>/dev/null || true
 
-if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  {
-    echo "status=conflict"
-    echo "target_ref=$TARGET_REF"
-    echo "mode=$MODE"
-    echo "upstream=$UPSTREAM"
-    echo "upstream_branch=$UPSTREAM_BRANCH"
-    echo "patches_branch=$PATCHES_BRANCH"
-    echo "conflicted_files=$CONFLICTED"
-    echo 'upstream_window<<AUTOPILOT_EOF'
-    echo "$UPSTREAM_WINDOW_JSON"
-    echo 'AUTOPILOT_EOF'
-  } >> "$GITHUB_OUTPUT"
-fi
-
-# Diagnostic JSON toujours sur stdout (utile en local et pour open-conflict-issue.sh)
-python3 -c '
-import json, os, sys
-print(json.dumps({
-  "fork": os.environ.get("FORK_NAME"),
-  "owner": os.environ.get("OWNER"),
-  "upstream": os.environ.get("UPSTREAM"),
-  "upstream_branch": os.environ.get("UPSTREAM_BRANCH"),
-  "patches_branch": os.environ.get("PATCHES_BRANCH"),
-  "mode": os.environ.get("MODE"),
-  "target_ref": os.environ.get("TARGET_REF"),
-  "conflicted_files": [f for f in os.environ.get("CONFLICTED","").split(",") if f],
-  "upstream_window": json.loads(os.environ.get("UPSTREAM_WINDOW_JSON") or "[]"),
-  "run_url": os.environ.get("RUN_URL",""),
-}, indent=2))
-' FORK_NAME="$FORK_NAME" OWNER="$OWNER" UPSTREAM="$UPSTREAM" UPSTREAM_BRANCH="$UPSTREAM_BRANCH" \
-  PATCHES_BRANCH="$PATCHES_BRANCH" MODE="$MODE" TARGET_REF="$TARGET_REF" \
-  CONFLICTED="$CONFLICTED" UPSTREAM_WINDOW_JSON="$UPSTREAM_WINDOW_JSON" \
-  RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
+# JSON diagnostic sur stdout (utilisable en local ET par le workflow)
+RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
+CONFLICTED_JSON=$(printf '%s\n' "$CONFLICTED" | tr ',' '\n' | jq -R . | jq -cs 'map(select(length > 0))')
+jq -n \
+  --arg status "conflict" \
+  --arg fork "$FORK_NAME" \
+  --arg owner "$OWNER" \
+  --arg upstream "$UPSTREAM" \
+  --arg upstream_branch "$UPSTREAM_BRANCH" \
+  --arg patches_branch "$PATCHES_BRANCH" \
+  --arg mode "$MODE" \
+  --arg target_ref "$TARGET_REF" \
+  --arg run_url "$RUN_URL" \
+  --argjson conflicted_files "$CONFLICTED_JSON" \
+  --argjson upstream_window "$UPSTREAM_WINDOW_JSON" \
+  '{status:$status, fork:$fork, owner:$owner, upstream:$upstream, upstream_branch:$upstream_branch,
+    patches_branch:$patches_branch, mode:$mode, target_ref:$target_ref,
+    conflicted_files:$conflicted_files, upstream_window:$upstream_window, run_url:$run_url}'
 
 exit 10

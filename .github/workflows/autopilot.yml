@@ -89,20 +89,19 @@ jobs:
           GH_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}
           GITHUB_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           chmod +x scripts/*.sh
-          set +e
           ./scripts/rebase-and-push.sh "${{ matrix.name }}" "${{ matrix.mode }}" "${{ matrix.target_ref }}" > /tmp/diag.json
           rc=$?
-          set -e
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "--- script stdout (/tmp/diag.json) ---"
+          cat /tmp/diag.json || true
+          echo "--- /script stdout ---"
           if [[ $rc -eq 10 ]]; then
-            # diagnostic JSON disponible dans /tmp/diag.json
             cp /tmp/diag.json diagnostic.json
             echo "conflict=true" >> "$GITHUB_OUTPUT"
           elif [[ $rc -ne 0 ]]; then
-            echo "unexpected error rc=$rc" >&2
-            cat /tmp/diag.json >&2 || true
+            echo "::error title=${{ matrix.name }}::rebase script exited rc=$rc (unexpected)"
             exit $rc
           fi
 
