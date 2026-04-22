@@ -9,9 +9,14 @@ Toutes les heures (cron `0 * * * *`), le workflow `autopilot.yml` :
 1. Lit `forks.yml`.
 2. Pour chaque fork actif, interroge l'upstream (release la plus récente et/ou HEAD de la branche par défaut selon `trigger`).
 3. Si un marqueur `oidc-base/<tag>` (release) ou `oidc-base-push/<branch>/<sha>` (push) est absent du fork, déclenche un job matrix.
-4. Dans le job : clone le fork, `git rebase` la branche patches (défaut `oidc`) sur la nouvelle cible upstream.
+4. Dans le job : clone le fork, réapplique les patches personnels sur la nouvelle cible upstream selon la stratégie choisie (`cherry-pick` par défaut).
    - **Succès** → pose le marqueur, `git push --force-with-lease origin oidc`. Le workflow `build-oidc.yml` du fork prend le relais et publie `ghcr.io/philippecaira/<service>-oidc:latest`. `company-stack` consomme au prochain `docker compose pull`.
-   - **Échec** (conflit) → abort, ouvre/met à jour une issue GitHub sur le fork avec diagnostic + commandes de reprise locale.
+   - **Échec** (conflit) → abort, ouvre/met à jour une issue GitHub sur le fork (ou sur `forks-autopilot` si les issues sont désactivées) avec diagnostic + commandes de reprise locale.
+
+### Stratégies
+
+- **`cherry-pick` (défaut)** : identifie les commits *vraiment* custom (`git log oidc ^upstream/<branch> ^<target>`), reset la branche patches sur la cible upstream, puis cherry-pick chaque commit custom dans l'ordre chronologique. Robuste — ne re-joue pas les commits upstream déjà mergés localement qui causent des conflits artificiels (typiquement sur `CHANGELOG.md`).
+- **`rebase`** : `git rebase <target>` classique. Plus conservateur pour les historiques où les "commits custom" ne sont pas clairement isolables, mais sujet aux re-conflits. Opter pour cette stratégie dans un fork via `strategy: rebase` dans `forks.yml`.
 
 ## Setup
 

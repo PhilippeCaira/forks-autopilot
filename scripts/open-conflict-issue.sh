@@ -51,14 +51,32 @@ else:
     parts.append("_(liste vide — le rebase a peut-être échoué avant d'entrer en conflit de contenu ; vérifier le run)_")
 parts.append("")
 
+strategy = d.get("strategy") or "rebase"
+failing = d.get("failing_commit") or {}
+
+if strategy == "cherry-pick":
+    parts.append("## Commit en conflit\n")
+    if failing:
+        parts.append(f"`{failing.get('sha','')[:10]}` {failing.get('subject','')}")
+    parts.append("")
+
 parts.append("## Reprise locale\n")
 parts.append("```bash")
 parts.append(f"gh repo clone {d['owner']}/{d['fork']} && cd {d['fork']}")
 parts.append(f"git remote add upstream https://github.com/{d['upstream']}.git")
-parts.append("git fetch upstream --tags")
-parts.append(f"git checkout {d['patches_branch']}")
-parts.append(f"git rebase {d['target_ref']}")
-parts.append("# résoudre les conflits, puis :")
+parts.append(f"git fetch upstream {d['upstream_branch']} && git fetch upstream 'refs/tags/{d['target_ref']}:refs/tags/{d['target_ref']}'")
+if strategy == "cherry-pick":
+    parts.append(f"# Stratégie cherry-pick: reset sur la cible + rejeu des commits custom")
+    parts.append(f"git checkout -B {d['patches_branch']} {d['target_ref']}")
+    parts.append(f"# lister les commits custom (sur la branche actuelle {d['patches_branch']} mais pas dans upstream/{d['upstream_branch']} ni {d['target_ref']}):")
+    parts.append(f"git log --reverse --no-merges --format='%h %s' origin/{d['patches_branch']} ^upstream/{d['upstream_branch']} ^{d['target_ref']}")
+    parts.append(f"# puis cherry-pick chaque sha dans l'ordre chronologique (du plus ancien au plus récent),")
+    parts.append(f"# en résolvant le conflit sur le commit listé ci-dessus, puis:")
+    parts.append(f"git cherry-pick --continue")
+else:
+    parts.append(f"git checkout {d['patches_branch']}")
+    parts.append(f"git rebase {d['target_ref']}")
+parts.append("# une fois les conflits résolus et tous les commits rejoués :")
 parts.append(f"git push --force-with-lease origin {d['patches_branch']}")
 if d['mode'] == 'release':
     parts.append(f"git tag -f oidc-base/{d['target_ref']} && git push -f origin oidc-base/{d['target_ref']}")

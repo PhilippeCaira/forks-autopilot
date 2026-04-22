@@ -74,6 +74,81 @@ else
   exit 4
 fi
 
+STRATEGY=$(yq -r "(.forks[] | select(.name == \"$FORK_NAME\") | .strategy) // (.defaults.strategy // \"cherry-pick\")" "$MANIFEST")
+log "strategy: $STRATEGY"
+
+# En mode cherry-pick on identifie les commits custom (ceux présents sur la branche
+# patches mais pas dans upstream/$UPSTREAM_BRANCH ni dans $TARGET_REF), on reset
+# $PATCHES_BRANCH sur $TARGET_REF et on cherry-pick chaque commit custom.
+# Avantage: ne réapplique pas les commits upstream-déjà-mergés qui causent des
+# conflits sur des fichiers append-only (CHANGELOG.md typiquement).
+if [[ "$STRATEGY" == "cherry-pick" ]]; then
+  mapfile -t CUSTOM_SHAS < <(git log --reverse --no-merges --format='%H' "$PATCHES_BRANCH" "^upstream/$UPSTREAM_BRANCH" "^$TARGET_REF")
+  log "custom commits to cherry-pick (${#CUSTOM_SHAS[@]}):"
+  for s in "${CUSTOM_SHAS[@]}"; do log "  $(git log -1 --format='%h %s' "$s")"; done
+
+  git checkout -q -B "$PATCHES_BRANCH" "$TARGET_REF"
+
+  if [[ ${#CUSTOM_SHAS[@]} -eq 0 ]]; then
+    log "no custom commits — fork is already identical to upstream"
+    MARKER="oidc-base/$TARGET_REF"
+    [[ "$MODE" == "push" ]] && MARKER="oidc-base-push/$UPSTREAM_BRANCH/${TARGET_REF:0:12}"
+    git tag -f "$MARKER" "$PATCHES_BRANCH"
+    git push --force-with-lease origin "$PATCHES_BRANCH" >&2
+    git push --force origin "refs/tags/$MARKER" >&2
+    jq -n --arg status success --arg fork "$FORK_NAME" --arg marker "$MARKER" --arg target_ref "$TARGET_REF" \
+      '{status:$status, fork:$fork, marker:$marker, target_ref:$target_ref, custom_count:0}'
+    exit 0
+  fi
+
+  for sha in "${CUSTOM_SHAS[@]}"; do
+    log "cherry-picking $sha"
+    set +e
+    git cherry-pick "$sha" >/tmp/cp.log 2>&1
+    cp_rc=$?
+    set -e
+    if [[ $cp_rc -ne 0 ]]; then
+      log "cherry-pick FAILED on $sha"
+      sed -n '1,40p' /tmp/cp.log >&2
+      CONFLICTED=$(git diff --name-only --diff-filter=U 2>/dev/null | paste -sd',' - || echo "")
+      FAILING_SUBJECT=$(git log -1 --format='%s' "$sha" 2>/dev/null || echo "")
+      git cherry-pick --abort 2>/dev/null || true
+      # Diag JSON pour open-conflict-issue.sh
+      RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
+      CONFLICTED_JSON=$(printf '%s\n' "$CONFLICTED" | tr ',' '\n' | jq -R . | jq -cs 'map(select(length > 0))')
+      FAILING_COMMIT_JSON=$(jq -cn --arg sha "$sha" --arg subject "$FAILING_SUBJECT" '{sha:$sha, subject:$subject}')
+      jq -n \
+        --arg status "conflict" --arg fork "$FORK_NAME" --arg owner "$OWNER" \
+        --arg upstream "$UPSTREAM" --arg upstream_branch "$UPSTREAM_BRANCH" \
+        --arg patches_branch "$PATCHES_BRANCH" --arg mode "$MODE" \
+        --arg target_ref "$TARGET_REF" --arg strategy "$STRATEGY" --arg run_url "$RUN_URL" \
+        --argjson conflicted_files "$CONFLICTED_JSON" \
+        --argjson upstream_window "[]" \
+        --argjson failing_commit "$FAILING_COMMIT_JSON" \
+        '{status:$status, fork:$fork, owner:$owner, upstream:$upstream,
+          upstream_branch:$upstream_branch, patches_branch:$patches_branch,
+          mode:$mode, target_ref:$target_ref, strategy:$strategy,
+          conflicted_files:$conflicted_files, upstream_window:$upstream_window,
+          failing_commit:$failing_commit, run_url:$run_url}'
+      exit 10
+    fi
+  done
+
+  if [[ "$MODE" == "release" ]]; then
+    MARKER="oidc-base/$TARGET_REF"
+  else
+    MARKER="oidc-base-push/$UPSTREAM_BRANCH/${TARGET_REF:0:12}"
+  fi
+  log "all ${#CUSTOM_SHAS[@]} commits cherry-picked OK — tagging $MARKER and pushing"
+  git tag -f "$MARKER" "$PATCHES_BRANCH"
+  git push --force-with-lease origin "$PATCHES_BRANCH" >&2
+  git push --force origin "refs/tags/$MARKER" >&2
+  jq -n --arg status success --arg fork "$FORK_NAME" --arg marker "$MARKER" \
+        --arg target_ref "$TARGET_REF" --argjson custom_count "${#CUSTOM_SHAS[@]}" \
+    '{status:$status, fork:$fork, marker:$marker, target_ref:$target_ref, custom_count:$custom_count}'
+  exit 0
+fi
+
 # Capture des commits upstream qu'on est sur le point d'absorber (pour diagnostic)
 MERGE_BASE=$(git merge-base "$PATCHES_BRANCH" "$TARGET_REF" 2>/dev/null || echo "")
 RANGE="${MERGE_BASE:+$MERGE_BASE..}$TARGET_REF"
