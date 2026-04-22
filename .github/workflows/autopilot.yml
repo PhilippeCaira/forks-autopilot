@@ -53,12 +53,13 @@ jobs:
             target=$(cut -f2 <<<"$out")
             upstream=$(cut -f3 <<<"$out")
             echo "::notice title=$name::needs rebase onto $upstream@$target ($mode)"
-            entries=$(python3 -c "
-import json,sys
-arr=json.loads(sys.argv[1])
-arr.append({'name':sys.argv[2],'mode':sys.argv[3],'target_ref':sys.argv[4],'upstream':sys.argv[5]})
-print(json.dumps(arr))
-" "$entries" "$name" "$mode" "$target" "$upstream")
+            entries=$(jq -cn \
+              --argjson prev "$entries" \
+              --arg name "$name" \
+              --arg mode "$mode" \
+              --arg target_ref "$target" \
+              --arg upstream "$upstream" \
+              '$prev + [{name:$name, mode:$mode, target_ref:$target_ref, upstream:$upstream}]')
           done
           has_work=$([[ "$entries" == "[]" ]] && echo "false" || echo "true")
           echo "matrix={\"include\":$entries}" >> "$GITHUB_OUTPUT"
