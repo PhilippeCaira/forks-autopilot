@@ -83,7 +83,16 @@ log "strategy: $STRATEGY"
 # Avantage: ne réapplique pas les commits upstream-déjà-mergés qui causent des
 # conflits sur des fichiers append-only (CHANGELOG.md typiquement).
 if [[ "$STRATEGY" == "cherry-pick" ]]; then
-  mapfile -t CUSTOM_SHAS < <(git log --reverse --no-merges --format='%H' "$PATCHES_BRANCH" "^upstream/$UPSTREAM_BRANCH" "^$TARGET_REF")
+  # Identification des commits VRAIMENT custom via patch-id (pas SHA).
+  # `git cherry <target> <patches>` énumère les commits de <patches> depuis la
+  # merge-base avec <target> et marque chacun :
+  #   '-' : équivalent (même patch-id) à un commit déjà dans <target>
+  #         — typiquement un commit upstream cherry-pické manuellement dans le fork
+  #   '+' : vraiment nouveau — c'est ce qu'on veut ré-appliquer
+  # `git cherry` retourne les commits dans l'ordre chronologique (plus ancien d'abord),
+  # ce qui correspond à l'ordre d'application attendu par cherry-pick.
+  log "identifying truly custom commits (patch-id vs $TARGET_REF)"
+  mapfile -t CUSTOM_SHAS < <(git cherry "$TARGET_REF" "$PATCHES_BRANCH" | awk '$1 == "+" {print $2}')
   log "custom commits to cherry-pick (${#CUSTOM_SHAS[@]}):"
   for s in "${CUSTOM_SHAS[@]}"; do log "  $(git log -1 --format='%h %s' "$s")"; done
 
