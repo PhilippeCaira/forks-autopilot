@@ -26,6 +26,7 @@ WORKDIR="${WORKDIR:-/tmp/forks-autopilot}"
 UPSTREAM=$(yq -r "(.forks[] | select(.name == \"$FORK_NAME\") | .upstream)" "$MANIFEST")
 UPSTREAM_BRANCH=$(yq -r "(.forks[] | select(.name == \"$FORK_NAME\") | .upstream_branch) // \"main\"" "$MANIFEST")
 PATCHES_BRANCH=$(yq -r "(.forks[] | select(.name == \"$FORK_NAME\") | .patches_branch) // (.defaults.patches_branch // \"oidc\")" "$MANIFEST")
+STRATEGY=$(yq -r "(.forks[] | select(.name == \"$FORK_NAME\") | .strategy) // (.defaults.strategy // \"cherry-pick\")" "$MANIFEST")
 
 export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-forks-autopilot}"
 export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-forks-autopilot@users.noreply.github.com}"
@@ -74,7 +75,6 @@ else
   exit 4
 fi
 
-STRATEGY=$(yq -r "(.forks[] | select(.name == \"$FORK_NAME\") | .strategy) // (.defaults.strategy // \"cherry-pick\")" "$MANIFEST")
 log "strategy: $STRATEGY"
 
 # En mode cherry-pick on identifie les commits custom (ceux présents sur la branche
