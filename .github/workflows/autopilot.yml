@@ -1,0 +1,120 @@
+name: autopilot
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      fork_name:
+        description: "Nom du fork à traiter (vide = tous)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORKS_OWNER: PhilippeCaira
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+      has_work: ${{ steps.build.outputs.has_work }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Detect updates for each fork
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}
+          FORK_FILTER: ${{ inputs.fork_name }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/*.sh
+          entries="[]"
+          mapfile -t names < <(yq -r '.forks[].name' forks.yml)
+          for name in "${names[@]}"; do
+            if [[ -n "${FORK_FILTER:-}" && "$name" != "$FORK_FILTER" ]]; then
+              continue
+            fi
+            out=$(./scripts/detect-update.sh "$name" 2>/dev/null || true)
+            if [[ -z "$out" ]]; then
+              echo "::notice title=$name::up-to-date"
+              continue
+            fi
+            mode=$(cut -f1 <<<"$out")
+            target=$(cut -f2 <<<"$out")
+            upstream=$(cut -f3 <<<"$out")
+            echo "::notice title=$name::needs rebase onto $upstream@$target ($mode)"
+            entries=$(python3 -c "
+import json,sys
+arr=json.loads(sys.argv[1])
+arr.append({'name':sys.argv[2],'mode':sys.argv[3],'target_ref':sys.argv[4],'upstream':sys.argv[5]})
+print(json.dumps(arr))
+" "$entries" "$name" "$mode" "$target" "$upstream")
+          done
+          has_work=$([[ "$entries" == "[]" ]] && echo "false" || echo "true")
+          echo "matrix={\"include\":$entries}" >> "$GITHUB_OUTPUT"
+          echo "has_work=$has_work" >> "$GITHUB_OUTPUT"
+
+  rebase:
+    needs: discover
+    if: needs.discover.outputs.has_work == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Rebase and push
+        id: rebase
+        env:
+          GH_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}
+          GITHUB_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/*.sh
+          set +e
+          ./scripts/rebase-and-push.sh "${{ matrix.name }}" "${{ matrix.mode }}" "${{ matrix.target_ref }}" > /tmp/diag.json
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [[ $rc -eq 10 ]]; then
+            # diagnostic JSON disponible dans /tmp/diag.json
+            cp /tmp/diag.json diagnostic.json
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          elif [[ $rc -ne 0 ]]; then
+            echo "unexpected error rc=$rc" >&2
+            cat /tmp/diag.json >&2 || true
+            exit $rc
+          fi
+
+      - name: Open conflict issue
+        if: steps.rebase.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}
+        run: |
+          chmod +x scripts/open-conflict-issue.sh
+          ./scripts/open-conflict-issue.sh "${{ matrix.name }}" diagnostic.json
+
+      - name: Fail step if conflict
+        if: steps.rebase.outputs.conflict == 'true'
+        run: |
+          echo "::error title=${{ matrix.name }}::rebase conflict, issue opened on fork"
+          exit 1

@@ -1,0 +1,44 @@
+defaults:
+  patches_branch: oidc
+  trigger: release
+
+forks:
+  - name: chatwoot
+    upstream: chatwoot/chatwoot
+    upstream_branch: develop
+    trigger: both
+
+  - name: invoiceninja
+    upstream: invoiceninja/invoiceninja
+    upstream_branch: v5-stable
+    trigger: release
+
+  - name: plane
+    upstream: makeplane/plane
+    upstream_branch: preview
+    trigger: both
+
+  - name: twenty
+    upstream: twentyhq/twenty
+    upstream_branch: main
+    trigger: release
+
+  - name: docuseal
+    upstream: docusealco/docuseal
+    upstream_branch: master
+    trigger: release
+
+  - name: analytics
+    upstream: plausible/analytics
+    upstream_branch: master
+    trigger: release
+
+  - name: activepieces
+    upstream: activepieces/activepieces
+    upstream_branch: main
+    trigger: release
+
+  - name: wg-easy
+    upstream: wg-easy/wg-easy
+    upstream_branch: master
+    trigger: release
