@@ -85,6 +85,7 @@ jobs:
 
       - name: Rebase and push
         id: rebase
+        shell: bash {0}
         env:
           GH_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}
           GITHUB_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}

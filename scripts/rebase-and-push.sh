@@ -48,7 +48,9 @@ cd "$REPO_DIR"
 
 log "adding upstream $UPSTREAM and fetching $UPSTREAM_BRANCH"
 git remote add upstream "https://github.com/$UPSTREAM.git"
-git fetch --tags upstream "$UPSTREAM_BRANCH" >&2
+# Pas de --tags pour éviter les conflits de tags mobiles upstream (ex: release-candidate)
+# Le tag cible est fetché explicitement plus bas si MODE=release.
+git fetch upstream "$UPSTREAM_BRANCH" >&2
 
 # Résoudre target_ref en un objet commit:
 #  - en mode release: TARGET_REF est un tag
