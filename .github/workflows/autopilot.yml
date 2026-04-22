@@ -115,6 +115,16 @@ jobs:
           chmod +x scripts/open-conflict-issue.sh
           ./scripts/open-conflict-issue.sh "${{ matrix.name }}" diagnostic.json
 
+      - name: Close resolved issues
+        if: steps.rebase.outputs.rc == '0'
+        env:
+          GH_TOKEN: ${{ secrets.FORKS_AUTOPILOT_PAT }}
+          FALLBACK_REPO: ${{ github.repository }}
+        run: |
+          chmod +x scripts/close-resolved-issues.sh
+          MARKER=$(jq -r '.marker // ""' /tmp/diag.json)
+          ./scripts/close-resolved-issues.sh "${{ matrix.name }}" "${{ matrix.target_ref }}" "$MARKER"
+
       - name: Fail step if conflict
         if: steps.rebase.outputs.conflict == 'true'
         run: |
